@@ -39,7 +39,7 @@ void experiment(uint32_t nNodes, uint32_t packetSize, bool verbose, bool pcap,
 
   // Setup CSMA
   CsmaHelper csma;
-  csma.SetChannelAttribute("DataRate", StringValue("100Mbps"));
+  csma.SetChannelAttribute("DataRate", StringValue("10Mbps"));
   csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(10)));
 
   // Buat node jaringan
