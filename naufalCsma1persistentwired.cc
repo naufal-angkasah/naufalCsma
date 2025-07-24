@@ -140,7 +140,7 @@ void experiment(uint32_t nNodes, uint32_t packetSize, bool verbose, bool pcap,
   FlowMonitorHelper flowHelper;
   Ptr<FlowMonitor> flowMonitor = flowHelper.InstallAll();
 
-  // Setup animasi NetAnim
+ // Setup FlowMonitor
   AnimationInterface anim("scratch/naufalCsma/animation.xml");
   anim.EnablePacketMetadata(true);  // Tampilkan info paket
   

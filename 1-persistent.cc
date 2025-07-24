@@ -4,164 +4,151 @@
 #include "ns3/mobility-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/wifi-module.h"
-#include "ns3/flow-monitor.h"
 #include "ns3/flow-monitor-helper.h"
 #include "ns3/netanim-module.h"
 #include "ns3/ipv4-flow-classifier.h"
+#include <cstdio>
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("WifiCsma1Persistent");
+NS_LOG_COMPONENT_DEFINE("OnePersistentWifi2_4GHz");
 
-void experiment(uint32_t nNodes, uint32_t packetSize, bool verbose, bool pcap, 
-                uint32_t simTime, uint32_t maxPackets, uint32_t interval, uint32_t serverNode)
+void experiment(uint32_t nNodes, uint32_t packetSize, bool verbose, bool pcap,
+                uint32_t simTime, uint32_t maxPackets, uint32_t interval, uint32_t serverNode,
+                std::string dataRate, std::string phyDelay)
 {
-  std::cout << "Running WiFi 1-persistent CSMA simulation with " << nNodes << " nodes (AP=" << serverNode << ")..." << std::endl;
+  std::cout << "Simulasi dengan " << nNodes << " node menggunakan WiFi 2.4GHz...\n";
 
-  if (serverNode >= nNodes) {
-    std::cerr << "ERROR: serverNode must be less than nNodes\n";
-    exit(1);
-  }
 
+   // ======== PERBAIKAN 1: KONFIGURASI ARP ========
   GlobalValue::Bind("ChecksumEnabled", BooleanValue(true));
+  Config::SetDefault("ns3::ArpCache::AliveTimeout", TimeValue(Seconds(3600)));
+  Config::SetDefault("ns3::ArpCache::DeadTimeout", TimeValue(Seconds(3600)));
 
   if (verbose) {
     LogComponentEnable("UdpEchoClientApplication", LOG_LEVEL_INFO);
     LogComponentEnable("UdpEchoServerApplication", LOG_LEVEL_INFO);
-    LogComponentEnable("WifiCsma1Persistent", LOG_LEVEL_INFO);
+    LogComponentEnable("FinalProject", LOG_LEVEL_INFO);
   }
-
+   // Buat node jaringan
   NodeContainer nodes;
   nodes.Create(nNodes);
 
-  WifiHelper wifi;
-  wifi.SetStandard(WIFI_STANDARD_80211g);
-
-  YansWifiPhyHelper phy = YansWifiPhyHelper::Default();
-  phy.Set("Frequency", UintegerValue(2412)); // 2.4 GHz channel 1
-
-  YansWifiChannelHelper channel = YansWifiChannelHelper::Default();
-  phy.SetChannel(channel.Create());
-
-  WifiMacHelper mac;
-  Ssid ssid = Ssid("wifi-1persistent");
-  mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid), "ActiveProbing", BooleanValue(false));
-
-  NetDeviceContainer devices;
-  for (uint32_t i = 0; i < nNodes; i++) {
-    if (i == serverNode) {
-      mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
-    }
-    devices.Add(wifi.Install(phy, mac, nodes.Get(i)));
+    // ======== PERBAIKAN 2: INISIALISASI MAC ADDRESS ========
+  for (uint32_t i = 0; i < devices.GetN(); i++) {
+    Ptr<CsmaNetDevice> device = DynamicCast<CsmaNetDevice>(devices.Get(i));
+    device->SetAddress(Mac48Address::Allocate());
   }
 
+  // Posisi node
   MobilityHelper mobility;
-  mobility.SetPositionAllocator("ns3::GridPositionAllocator", 
-                                "MinX", DoubleValue(0.0), 
-                                "MinY", DoubleValue(0.0), 
-                                "DeltaX", DoubleValue(10.0), 
-                                "DeltaY", DoubleValue(10.0), 
-                                "GridWidth", UintegerValue(5), 
+  mobility.SetPositionAllocator("ns3::GridPositionAllocator",
+                                "MinX", DoubleValue(0.0),
+                                "MinY", DoubleValue(0.0),
+                                "DeltaX", DoubleValue(10.0),
+                                "DeltaY", DoubleValue(10.0),
+                                "GridWidth", UintegerValue(5),
                                 "LayoutType", StringValue("RowFirst"));
   mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
   mobility.Install(nodes);
 
+  // PHY + Channel
+  YansWifiChannelHelper channel = YansWifiChannelHelper::Default();
+  channel.SetPropagationDelay("ns3::ConstantSpeedPropagationDelayModel");
+  channel.AddPropagationLoss("ns3::FriisPropagationLossModel");
+
+  YansWifiPhyHelper phy = YansWifiPhyHelper::Default();
+  phy.SetChannel(channel.Create());
+
+  WifiHelper wifi;
+  wifi.SetStandard(WIFI_STANDARD_80211g);
+  wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
+                               "DataMode", StringValue("ErpOfdmRate6Mbps"),
+                               "ControlMode", StringValue("ErpOfdmRate6Mbps"));
+
+  WifiMacHelper mac;
+  Ssid ssid = Ssid("ns3-wifi");
+
+  NetDeviceContainer devices;
+  for (uint32_t i = 0; i < nNodes; ++i) {
+    if (i == serverNode) {
+      mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
+    } else {
+      mac.SetType("ns3::StaWifiMac", "Ssid", SsidValue(ssid));
+    }
+    devices.Add(wifi.Install(phy, mac, nodes.Get(i)));
+  }
+
+   // Pindahkan AP
   Ptr<Node> apNode = nodes.Get(serverNode);
   Ptr<MobilityModel> apMobility = apNode->GetObject<MobilityModel>();
   apMobility->SetPosition(Vector(25.0, 25.0, 0.0));
 
+  // Internet stack
   InternetStackHelper stack;
   stack.Install(nodes);
 
+ // Atur alamat IP
   Ipv4AddressHelper address;
   address.SetBase("10.1.1.0", "255.255.255.0");
   Ipv4InterfaceContainer interfaces = address.Assign(devices);
 
-  UdpEchoServerHelper apServer(9);
-  ApplicationContainer apServerApp = apServer.Install(apNode);
-  apServerApp.Start(Seconds(1.0));
-  apServerApp.Stop(Seconds(simTime));
+  // Server AP
+  Ptr<Node> apNode = nodes.Get(serverNode);
+  UdpEchoServerHelper echoServer(9);
+  ApplicationContainer serverApps = echoServer.Install(apNode);
+  serverApps.Start(Seconds(1.0));
+  serverApps.Stop(Seconds(simTime));
 
-  UdpEchoClientHelper clientToAp(interfaces.GetAddress(serverNode), 9);
-  clientToAp.SetAttribute("MaxPackets", UintegerValue(maxPackets));
-  clientToAp.SetAttribute("Interval", TimeValue(MilliSeconds(interval)));
-  clientToAp.SetAttribute("PacketSize", UintegerValue(packetSize));
-
-  ApplicationContainer clientApps;
+  // Client ke AP
   for (uint32_t i = 0; i < nNodes; i++) {
-    if (i != serverNode) {
-      ApplicationContainer app = clientToAp.Install(nodes.Get(i));
-      app.Start(Seconds(2.0 + 0.1 * i));
-      app.Stop(Seconds(simTime));
-      clientApps.Add(app);
-    }
+    if (i == serverNode) continue;
+
+    UdpEchoClientHelper client(interfaces.GetAddress(serverNode), 9);
+    client.SetAttribute("MaxPackets", UintegerValue(maxPackets));
+    client.SetAttribute("Interval", TimeValue(MilliSeconds(interval)));
+    client.SetAttribute("PacketSize", UintegerValue(packetSize));
+
+    ApplicationContainer apps = client.Install(nodes.Get(i));
+    apps.Start(Seconds(2.0 + 0.1 * i));
+    apps.Stop(Seconds(simTime));
   }
 
-  UdpEchoServerHelper clientServer(10);
-  ApplicationContainer clientServerApps;
-  for (uint32_t i = 0; i < nNodes; i++) {
-    if (i != serverNode) {
-      clientServerApps.Add(clientServer.Install(nodes.Get(i)));
-    }
-  }
-  clientServerApps.Start(Seconds(1.0));
-  clientServerApps.Stop(Seconds(simTime));
-
-  ApplicationContainer apClientApps;
-  for (uint32_t i = 0; i < nNodes; i++) {
-    if (i != serverNode) {
-      UdpEchoClientHelper apToClient(interfaces.GetAddress(i), 10);
-      apToClient.SetAttribute("MaxPackets", UintegerValue(maxPackets));
-      apToClient.SetAttribute("Interval", TimeValue(MilliSeconds(interval)));
-      apToClient.SetAttribute("PacketSize", UintegerValue(packetSize));
-      ApplicationContainer app = apToClient.Install(apNode);
-      app.Start(Seconds(3.0 + 0.1 * i));
-      app.Stop(Seconds(simTime));
-      apClientApps.Add(app);
-    }
-  }
-
+  // Monitoring
   if (pcap) {
-    phy.EnablePcap("wifi-ap-trace", devices.Get(serverNode));
+    phy.EnablePcap("wifi-ap", devices.Get(serverNode));
   }
-
+ // Setup FlowMonitor
   FlowMonitorHelper flowHelper;
-  Ptr<FlowMonitor> flowMonitor = flowHelper.InstallAll();
+  Ptr<FlowMonitor> monitor = flowHelper.InstallAll();
+ // Setup FlowMonitor
+  AnimationInterface anim("scratch/naufalCsma/animation.xml");
+  anim.EnablePacketMetadata(true);// Tampilkan info paket
 
-  AnimationInterface anim("wifi-1persistent.xml");
-  anim.EnablePacketMetadata(true);
   for (uint32_t i = 0; i < nNodes; i++) {
-    if (i == serverNode) {
-      anim.UpdateNodeColor(i, 255, 0, 0);
-      anim.UpdateNodeDescription(i, "AP");
-    } else {
-      anim.UpdateNodeColor(i, 0, 0, 255);
-      anim.UpdateNodeDescription(i, "Client");
-    }
+    anim.UpdateNodeDescription(i, (i == serverNode) ? "AP" : "Client");
+    anim.UpdateNodeColor(i, (i == serverNode) ? 255 : 0, 0, (i == serverNode) ? 0 : 255);
   }
 
   Simulator::Stop(Seconds(simTime));
   Simulator::Run();
 
-  flowMonitor->CheckForLostPackets();
+  monitor->CheckForLostPackets();
   Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowHelper.GetClassifier());
-  FlowMonitor::FlowStatsContainer stats = flowMonitor->GetFlowStats();
+  FlowMonitor::FlowStatsContainer stats = monitor->GetFlowStats();
 
-  for (auto iter = stats.begin(); iter != stats.end(); iter++) {
-    if (classifier) {
-      Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(iter->first);
-      std::string src = (t.sourceAddress == interfaces.GetAddress(serverNode)) ? "AP" : "Client";
-      std::string dst = (t.destinationAddress == interfaces.GetAddress(serverNode)) ? "AP" : "Client";
-      NS_LOG_INFO("Flow " << iter->first << " (" << src << ":" << t.sourcePort << " -> " << dst << ":" << t.destinationPort << ")");
-      NS_LOG_INFO("  Tx Packets: " << iter->second.txPackets);
-      NS_LOG_INFO("  Rx Packets: " << iter->second.rxPackets);
-      NS_LOG_INFO("  Lost Packets: " << iter->second.lostPackets);
-      NS_LOG_INFO("  Throughput: " << iter->second.rxBytes * 8.0 / (simTime - 2) / 1000 << " Kbps");
-    }
+  for (auto iter = stats.begin(); iter != stats.end(); ++iter) {
+    Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(iter->first);
+    std::cout << "Flow from " << t.sourceAddress << " to " << t.destinationAddress << ":\n";
+    std::cout << "  Tx Packets: " << iter->second.txPackets << ", Rx Packets: " << iter->second.rxPackets << "\n";
+    std::cout << "  Throughput: " << iter->second.rxBytes * 8.0 / (simTime - 2) / 1000 << " Kbps\n";
+    
+  flowMonitor->SerializeToXmlFile("scratch/naufalCsma/flow-stats.xml", true, true);
+  Simulator::Destroy();
+  NS_LOG_INFO("Simulation completed");
   }
 
   Simulator::Destroy();
-  NS_LOG_INFO("Simulation completed");
 }
 
 int main(int argc, char *argv[])
@@ -174,19 +161,40 @@ int main(int argc, char *argv[])
   uint32_t serverNode = 24;
   bool verbose = true;
   bool pcap = true;
+  std::string dataRate = "6Mbps"; //ukuran bandwith
+  std::string phyDelay = "10us"; //delay dalam micro second
 
   CommandLine cmd(__FILE__);
   cmd.AddValue("nNodes", "Number of nodes", nNodes);
-  cmd.AddValue("packetSize", "Packet size", packetSize);
+  cmd.AddValue("packetSize", "Packet size in bytes", packetSize);
   cmd.AddValue("simTime", "Simulation time", simTime);
-  cmd.AddValue("maxPackets", "Maximum packets to send", maxPackets);
+  cmd.AddValue("maxPackets", "Max packets to send", maxPackets);
   cmd.AddValue("interval", "Interval between packets (ms)", interval);
-  cmd.AddValue("serverNode", "Server (AP) node index", serverNode);
-  cmd.AddValue("verbose", "Enable verbose output", verbose);
-  cmd.AddValue("pcap", "Enable PCAP tracing", pcap);
+  cmd.AddValue("serverNode", "Node ID to act as AP", serverNode);
+  cmd.AddValue("verbose", "Enable logging", verbose);
+  cmd.AddValue("pcap", "Enable pcap", pcap);
+  cmd.AddValue("dataRate", "Data rate", dataRate);
+  cmd.AddValue("phyDelay", "Channel delay", phyDelay);
   cmd.Parse(argc, argv);
 
-  experiment(nNodes, packetSize, verbose, pcap, simTime, maxPackets, interval, serverNode);
+   if (nNodes < 10) {
+    std::cout << "WARNING: Minimum 10 nodes recommended\n";
+    nNodes = 10;
+  }
+     if (nNodes > 80) {
+    std::cout << "WARNING: Maximum 80 nodes recommended\n";
+    nNodes = 80;
+  }
 
+  serverNode = (serverNode < nNodes) ? serverNode : nNodes - 1;
+
+  experiment(nNodes, packetSize, verbose, pcap, simTime, maxPackets, interval, serverNode, dataRate, phyDelay);
+ 
+ // Run Python analysis
+  int status = system("python3 scratch/naufalCsma/maintesv2_analyze.py");
+  if (status != 0)
+  {
+    std::cerr << "⚠️  Gagal menjalankan maintesv1_analyze.py" << std::endl;
+  }
   return 0;
 }
